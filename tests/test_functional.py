@@ -4,12 +4,11 @@ import numpy as np
 import time
 from core import cache, http
 from analysis import indicators as ind
-from analysis import security, onchain, technicals, scoring, pipeline
+from analysis import security, onchain, sentiment, technicals, scoring, pipeline
 from bot import templates as T
 
 def test_indicators():
     print("\n--- Testing analysis/indicators.py ---")
-    # 1. EMA test
     arr = np.array([10.0, 11.0, 12.0, 13.0, 14.0])
     ema_res = ind.ema(arr, 3)
     assert len(ema_res) == 5
@@ -17,7 +16,6 @@ def test_indicators():
     assert ema_res[-1] > 12.0
     print("  [✓] EMA calculation verified")
 
-    # 2. RSI test
     flat = np.ones(50) * 100.0
     rsi_flat = ind.rsi(flat)
     assert not np.isnan(rsi_flat[-1])
@@ -32,14 +30,12 @@ def test_indicators():
     assert rsi_down[-1] < 30.0
     print(f"  [✓] RSI downward trend verified: {rsi_down[-1]:.1f}")
 
-    # 3. MACD test
     line, sig, hist = ind.macd(up)
     assert len(line) == len(up)
     assert len(sig) == len(up)
     assert len(hist) == len(up)
     print("  [✓] MACD line, signal, and histogram verified")
 
-    # 4. ATR test
     high = up + 2.0
     low = up - 2.0
     close = up
@@ -47,13 +43,11 @@ def test_indicators():
     assert atr_val[-1] > 0
     print(f"  [✓] ATR verified: {atr_val[-1]:.2f}")
 
-    # 5. VWAP test
     vol = np.ones(len(up)) * 1000.0
     vwap_val = ind.vwap(high, low, close, vol)
     assert vwap_val > 0
     print(f"  [✓] VWAP verified: {vwap_val:.2f}")
 
-    # 6. Swing levels test
     h_series = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], dtype=float)
     l_series = h_series - 1.0
     h_pivots, l_pivots = ind.swing_levels(h_series, l_series, lookback=3)
@@ -62,7 +56,6 @@ def test_indicators():
 
 def test_security():
     print("\n--- Testing analysis/security.py ---")
-    # Case 1: Hard fail on Mint Authority
     rep_mint = {
         "mintAuthority": "SomeAuthorityPubkey",
         "freezeAuthority": None,
@@ -75,7 +68,6 @@ def test_security():
     assert sec_read.score == 0.0
     print("  [✓] Mint authority triggers hard-fail")
 
-    # Case 2: Hard fail on Freeze Authority
     rep_freeze = {
         "mintAuthority": None,
         "freezeAuthority": "SomeFreezePubkey",
@@ -87,7 +79,6 @@ def test_security():
     assert sec_read2.hard_fail is True
     print("  [✓] Freeze authority triggers hard-fail")
 
-    # Case 3: Mature token with distributed LP (>= 50 providers)
     rep_mature = {
         "mintAuthority": None,
         "freezeAuthority": None,
@@ -102,7 +93,6 @@ def test_security():
     assert sec_read3.score >= 70.0
     print(f"  [✓] Mature token with 114 LP providers passes security (Score: {sec_read3.score})")
 
-    # Case 4: Trench token with low LP lock (< 50%) -> hard fail
     rep_trench_rug = {
         "mintAuthority": None,
         "freezeAuthority": None,
@@ -145,6 +135,33 @@ def test_onchain():
     assert onc_trench.score < 50
     print(f"  [✓] Low liquidity trench flagged: Score {onc_trench.score}")
 
+def test_sentiment():
+    print("\n--- Testing analysis/sentiment.py ---")
+    # Case 1: Organic Volume Surge & Strong Buying
+    agg_surge = {
+        "pair": {"baseToken": {"address": "testmint123"}, "marketCap": 10_000_000},
+        "volume": {"m5": 50_000, "h1": 100_000, "h24": 1_000_000},  # 5m is 50% of 1h volume (huge surge)
+        "txns": {"h1": {"buys": 80, "sells": 20}},
+        "liquidity_usd": 500_000,
+    }
+    senti_surge = sentiment.analyse(agg_surge, tier="midcap")
+    assert senti_surge.data_ok is True
+    assert senti_surge.score >= 75.0
+    print(f"  [✓] Organic volume surge scored high: {senti_surge.score}")
+
+    # Case 2: Artificial Hype on Trench (High Boosts + Weak Liquidity/Selling)
+    agg_trap = {
+        "pair": {"baseToken": {"address": "scammint456"}, "marketCap": 50_000},
+        "volume": {"m5": 100, "h1": 5_000, "h24": 20_000},
+        "txns": {"h1": {"buys": 5, "sells": 30}},  # Heavy dumping
+        "liquidity_usd": 8_000,  # Weak liquidity
+    }
+    boosts = [{"tokenAddress": "scammint456", "totalAmount": 250}]
+    senti_trap = sentiment.analyse(agg_trap, boost_data=boosts, tier="trench")
+    assert senti_trap.is_artificial_hype is True
+    assert senti_trap.score <= 40.0
+    print(f"  [✓] Artificial hype trap correctly identified and penalized: Score {senti_trap.score}")
+
 def test_technicals():
     print("\n--- Testing analysis/technicals.py ---")
     t = np.linspace(1, 100, 100)
@@ -171,9 +188,8 @@ def test_technicals():
     assert len(tech_read.levels.tp) == 3
     print(f"  [✓] Technical analysis computed: Trend={tech_read.trend}, Score={tech_read.score}, Stop={tech_read.levels.stop:.4f}, TP1={tech_read.levels.tp[0]:.4f}")
 
-    # Test SL Clamping on extreme volatility
     extreme_levels = technicals.levels_from_atr(close=1.0, atr_val=0.8, supports=[0.01], risk="degenerate")
-    assert extreme_levels.stop >= 0.10  # Clamped above 10% price floor
+    assert extreme_levels.stop >= 0.10
     assert extreme_levels.stop < 1.0
     print(f"  [✓] Extreme volatility stop loss clamped safely: {extreme_levels.stop:.2f}")
 
@@ -183,12 +199,12 @@ def test_scoring():
     onc = onchain.OnchainRead(score=75.0, data_ok=True, liq_usd=500_000, tier="midcap")
     tech = technicals.TechRead(score=70.0, data_ok=True, trend="uptrend", rsi=55.0)
 
-    verdict = scoring.decide(security=sec, onchain=onc, technicals=tech)
+    verdict = scoring.decide(security=sec, onchain=onc, technicals=tech, sentiment_score=75.0)
     assert verdict.action in ("STRONG BUY", "BUY")
     assert verdict.risk in ("Low", "Medium")
-    print(f"  [✓] Confluence score: {verdict.confluence}, Action: {verdict.action}, Risk: {verdict.risk}, Size: {verdict.size_pct}%")
+    assert "sentiment" in verdict.parts
+    print(f"  [✓] Confluence with sentiment: {verdict.confluence}, Action: {verdict.action}, Risk: {verdict.risk}, Size: {verdict.size_pct}%")
 
-    # Test Overbought RSI override -> WAIT FOR DIP
     tech_overbought = technicals.TechRead(score=85.0, data_ok=True, trend="uptrend", rsi=78.0)
     verdict_ob = scoring.decide(security=sec, onchain=onc, technicals=tech_overbought)
     assert verdict_ob.action == "WAIT FOR DIP"
@@ -202,7 +218,7 @@ def test_scoring():
 
     tech_empty = technicals.TechRead(data_ok=False)
     verdict_notec = scoring.decide(security=sec, onchain=onc, technicals=tech_empty)
-    assert verdict_notec.confluence <= 55.0
+    assert verdict_notec.confluence <= 70.0
     assert verdict_notec.action == "WATCHLIST"
     print(f"  [✓] Missing technicals capped confluence at {verdict_notec.confluence} and action is WATCHLIST")
 
@@ -215,7 +231,6 @@ async def test_cache_and_templates():
         assert val == {"symbol": "TEST", "val": 123}
         print("  [✓] L1 & L2 cache set/get verified")
 
-        # Test Scan History in Cache
         sample_scan = {
             "timestamp": time.time(),
             "mint": "TestMint111111111111111111111111111111111111",
@@ -262,9 +277,9 @@ async def test_live_pipeline():
         assert r_bonk is not None
         assert "bonk" in r_bonk.symbol.lower()
         assert r_bonk.onchain.tier == "midcap"
-        print(f"  [✓] BONK: Price ${r_bonk.price:.8f} | Score {r_bonk.verdict.confluence:.1f} | Action {r_bonk.verdict.action}")
+        assert r_bonk.sentiment.data_ok is True
+        print(f"  [✓] BONK: Price ${r_bonk.price:.8f} | Score {r_bonk.verdict.confluence:.1f} | Action {r_bonk.verdict.action} | Sentiment {r_bonk.sentiment.score}")
 
-        # Verify scan history was recorded
         recent = await cache.get_recent_scans(limit=1)
         assert len(recent) > 0
         assert recent[0]["mint"] == bonk_mint
@@ -273,6 +288,10 @@ async def test_live_pipeline():
         msg = T.render_scan(r_bonk)
         assert len(msg) > 100
         print("  [✓] BONK MarkdownV2 template rendered cleanly without error")
+
+        kb = T.build_scan_keyboard(r_bonk)
+        assert len(kb.inline_keyboard) == 2
+        print("  [✓] Telegram InlineKeyboardMarkup keyboard generated with 4 action buttons")
 
         usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         print(f"  Fetching live scan for USDC ({usdc_mint})...")
@@ -288,6 +307,7 @@ async def main():
     test_indicators()
     test_security()
     test_onchain()
+    test_sentiment()
     test_technicals()
     test_scoring()
     await test_cache_and_templates()

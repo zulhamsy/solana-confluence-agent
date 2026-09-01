@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 _MDV2 = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 
 ACTION_ICON = {
@@ -97,15 +99,40 @@ def render_scan(r) -> str:
     else:
         L.append("_Technicals unavailable \\(insufficient candle history\\)\\._")
 
+    if getattr(r, "sentiment", None) and r.sentiment.data_ok:
+        s_items = r.sentiment.flags + r.sentiment.notes
+        if s_items:
+            L.append("*━━ Attention & Sentiment ━━*")
+            for item in s_items[:3]:
+                icon = "🚨" if item in r.sentiment.flags else "👁️"
+                L.append(f"{icon} {esc(item)}")
+            L.append("")
+
     if v.degraded:
-        L.append("")
         L.append(f"⚙️ Degraded inputs: {esc(', '.join(v.degraded))} — weights redistributed\\.")
-    L.append("")
+        L.append("")
+
     L.append(f"`{esc(r.mint)}`")
     L.append(f"[Chart]({esc_url(r.pair_url)}) · [Rugcheck](https://rugcheck.xyz/tokens/{r.mint})")
     L.append("")
     L.append("_Analysis only, not financial advice\\. Verify before sizing\\._")
     return "\n".join(L)
+
+
+def build_scan_keyboard(r) -> InlineKeyboardMarkup:
+    chart_url = r.pair_url if r.pair_url else f"https://dexscreener.com/solana/{r.mint}"
+    rugcheck_url = f"https://rugcheck.xyz/tokens/{r.mint}"
+    keyboard = [
+        [
+            InlineKeyboardButton("📈 DexScreener", url=chart_url),
+            InlineKeyboardButton("🛡️ Rugcheck", url=rugcheck_url),
+        ],
+        [
+            InlineKeyboardButton("🔄 Re-Scan", callback_data=f"rescan:{r.mint}"),
+            InlineKeyboardButton("📋 Copy CA", callback_data=f"copy:{r.mint}"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
 def render_row(r) -> str:

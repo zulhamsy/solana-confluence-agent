@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from analysis import onchain as onchain_mod
-from analysis import scoring, security, technicals
+from analysis import scoring, security, sentiment, technicals
 from core import cache
 from core.http import gather
 from providers import dexscreener, geckoterminal, goplus, rugcheck
@@ -23,6 +23,7 @@ class ScanResult:
     security: security.SecurityRead
     onchain: onchain_mod.OnchainRead
     technicals: technicals.TechRead
+    sentiment: sentiment.SentimentRead
     verdict: scoring.Verdict
 
 
@@ -65,7 +66,18 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
         provisional = "high" if onc.tier == "trench" else "medium"
         tech = technicals.analyse(candles, risk=provisional)
 
-    verdict = scoring.decide(security=sec, onchain=onc, technicals=tech)
+    # Sentiment & Attention Proxy
+    boost_data = None
+    if onc.tier == "trench" and not light:
+        boost_data = await dexscreener.boosted_top()
+    senti = sentiment.analyse(agg, boost_data=boost_data, tier=onc.tier)
+
+    verdict = scoring.decide(
+        security=sec,
+        onchain=onc,
+        technicals=tech,
+        sentiment_score=senti.score if senti.data_ok else None,
+    )
     base = pair.get("baseToken") or {}
     price_usd = float(pair.get("priceUsd") or 0)
     symbol_str = base.get("symbol") or "???"
@@ -80,6 +92,7 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
         security=sec,
         onchain=onc,
         technicals=tech,
+        sentiment=senti,
         verdict=verdict,
     )
 

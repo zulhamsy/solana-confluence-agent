@@ -6,7 +6,7 @@ import re
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from analysis import pipeline
 from bot import templates as T
@@ -66,7 +66,10 @@ async def scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await note.edit_text("No tradeable Solana pair found for that mint.")
         return
     await note.edit_text(
-        T.render_scan(result), parse_mode=ParseMode.MARKDOWN_V2, disable_web_page_preview=True
+        T.render_scan(result),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        disable_web_page_preview=True,
+        reply_markup=T.build_scan_keyboard(result),
     )
 
 
@@ -138,6 +141,40 @@ async def history(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def on_callback(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if not _authorised(update):
+        await query.answer("Not authorised.", show_alert=True)
+        return
+
+    data = query.data
+    if data.startswith("copy:"):
+        mint = data.split(":", 1)[1]
+        await query.answer(f"Mint CA: {mint}", show_alert=True)
+        return
+
+    if data.startswith("rescan:"):
+        mint = data.split(":", 1)[1]
+        await query.answer("Re-scanning token with fresh data...")
+        try:
+            result = await pipeline.scan(mint)
+            if result:
+                await query.edit_message_text(
+                    T.render_scan(result),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_web_page_preview=True,
+                    reply_markup=T.build_scan_keyboard(result),
+                )
+            else:
+                await query.answer("Token pair not found or delisted.", show_alert=True)
+        except Exception:
+            log.exception("rescan failed for %s", mint)
+            await query.answer("Re-scan error — try again shortly.", show_alert=True)
+
+
 def register(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
@@ -146,3 +183,4 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("trend", trend))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("history", history))
+    app.add_handler(CallbackQueryHandler(on_callback))
