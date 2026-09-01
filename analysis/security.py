@@ -48,36 +48,48 @@ def _real_holders(report: dict) -> list[dict]:
     return [h for h in (report.get("topHolders") or []) if not is_pool(h)]
 
 
-def analyse(report: dict | None, tier: str = "midcap") -> SecurityRead:
+def analyse(report: dict | None, goplus_report: dict | None = None, tier: str = "midcap") -> SecurityRead:
     read = SecurityRead()
-    if not report:
-        read.flags.append("Rugcheck unavailable — security unverified. Treat as untrusted.")
+    if not report and not goplus_report:
+        read.flags.append("Security reports unavailable — treat as untrusted.")
         read.hard_fail = True
         return read
 
     read.data_ok = True
-    token = report.get("token") or {}
+    token = (report or {}).get("token") or {}
     points = 100.0
 
     # --- Authorities: binary, non-negotiable ---
-    if report.get("mintAuthority") or token.get("mintAuthority"):
-        read.flags.append("MINT AUTHORITY ACTIVE — supply can be inflated at will.")
+    rc_mint = bool((report or {}).get("mintAuthority") or token.get("mintAuthority"))
+    gp_mint = str((goplus_report or {}).get("mintable", {}).get("status", "0")) == "1"
+
+    if rc_mint or gp_mint:
+        src = "Rugcheck & GoPlus" if (rc_mint and gp_mint) else ("GoPlus" if gp_mint else "Rugcheck")
+        read.flags.append(f"MINT AUTHORITY ACTIVE ({src}) — supply can be inflated at will.")
         read.hard_fail = True
     else:
         read.passes.append("Mint authority revoked")
 
-    if report.get("freezeAuthority") or token.get("freezeAuthority"):
-        read.flags.append("FREEZE AUTHORITY ACTIVE — your balance can be frozen (honeypot vector).")
+    rc_freeze = bool((report or {}).get("freezeAuthority") or token.get("freezeAuthority"))
+    gp_freeze = str((goplus_report or {}).get("freezable", {}).get("status", "0")) == "1"
+
+    if rc_freeze or gp_freeze:
+        src = "Rugcheck & GoPlus" if (rc_freeze and gp_freeze) else ("GoPlus" if gp_freeze else "Rugcheck")
+        read.flags.append(f"FREEZE AUTHORITY ACTIVE ({src}) — balance can be frozen (honeypot vector).")
         read.hard_fail = True
     else:
         read.passes.append("Freeze authority revoked")
 
-    if report.get("rugged"):
+    if (report or {}).get("rugged"):
         read.flags.append("Rugcheck marks this token as ALREADY RUGGED.")
         read.hard_fail = True
 
+    if str((goplus_report or {}).get("non_transferable", "0")) == "1":
+        read.flags.append("GoPlus: NON-TRANSFERABLE token detected (Honeypot).")
+        read.hard_fail = True
+
     # --- Transfer fee / tax (Token-2022 extension) ---
-    fee = float(((report.get("transferFee") or {}).get("pct") or 0))
+    fee = float((((report or {}).get("transferFee") or {}).get("pct") or 0))
     if fee > 5:
         read.flags.append(f"Transfer tax {fee:.1f}% — exit cost is punitive.")
         read.hard_fail = True
@@ -91,15 +103,15 @@ def analyse(report: dict | None, tier: str = "midcap") -> SecurityRead:
     # Two legitimate shapes exist and conflating them produces false rugs:
     #   (a) young token: one LP, must be BURNED or time-locked
     #   (b) mature token: hundreds of independent LPs, nothing is "locked"
-    markets = report.get("markets") or []
+    markets = (report or {}).get("markets") or []
     lp_locked = max([((m.get("lp") or {}).get("lpLockedPct") or 0.0) for m in markets], default=0.0)
-    providers = report.get("totalLPProviders") or 0
+    providers = (report or {}).get("totalLPProviders") or 0
     read.lp_locked_pct = lp_locked
     distributed = tier == "midcap" and providers >= 50
 
     if distributed:
         read.passes.append(f"LP distributed across {providers:,} providers (lock not applicable)")
-    else:
+    elif report:
         floor = 90.0 if tier == "midcap" else 80.0
         if lp_locked >= floor:
             read.passes.append(f"LP burned/locked {lp_locked:.0f}%")
@@ -111,57 +123,65 @@ def analyse(report: dict | None, tier: str = "midcap") -> SecurityRead:
             read.hard_fail = True
 
     # --- Holder concentration (pool vaults excluded) ---
-    holders = _real_holders(report)
-    organic = [h for h in holders if not h.get("insider")]
-    if organic:
-        read.top10_pct = sum(float(h.get("pct") or 0) for h in organic[:10])
-        cap = 25.0 if tier == "midcap" else 35.0
-        if read.top10_pct <= cap:
-            read.passes.append(f"Top-10 holders {read.top10_pct:.1f}%")
-        elif read.top10_pct <= cap + 15:
-            read.warnings.append(f"Top-10 holders {read.top10_pct:.1f}% — concentrated.")
-            points -= 18
-        else:
-            read.flags.append(f"Top-10 holders {read.top10_pct:.1f}% — one exit dumps the chart.")
-            points -= 35
+    if report:
+        holders = _real_holders(report)
+        organic = [h for h in holders if not h.get("insider")]
+        if organic:
+            read.top10_pct = sum(float(h.get("pct") or 0) for h in organic[:10])
+            cap = 25.0 if tier == "midcap" else 35.0
+            if read.top10_pct <= cap:
+                read.passes.append(f"Top-10 holders {read.top10_pct:.1f}%")
+            elif read.top10_pct <= cap + 15:
+                read.warnings.append(f"Top-10 holders {read.top10_pct:.1f}% — concentrated.")
+                points -= 18
+            else:
+                read.flags.append(f"Top-10 holders {read.top10_pct:.1f}% — one exit dumps the chart.")
+                points -= 35
 
-    # --- Insider / bundler clusters ---
-    insider_pct = sum(float(h.get("pct") or 0) for h in holders if h.get("insider"))
-    if insider_pct > 15:
-        read.flags.append(f"Insider/bundled wallets hold {insider_pct:.1f}%.")
-        points -= 30
-    elif insider_pct > 5:
-        read.warnings.append(f"Insider cluster {insider_pct:.1f}%")
-        points -= 12
+        # --- Insider / bundler clusters ---
+        insider_pct = sum(float(h.get("pct") or 0) for h in holders if h.get("insider"))
+        if insider_pct > 15:
+            read.flags.append(f"Insider/bundled wallets hold {insider_pct:.1f}%.")
+            points -= 30
+        elif insider_pct > 5:
+            read.warnings.append(f"Insider cluster {insider_pct:.1f}%")
+            points -= 12
 
-    if tier == "trench":
-        nets = report.get("insiderNetworks") or []
-        if nets:
-            read.warnings.append(f"{len(nets)} insider network(s) detected in the holder graph.")
-            points -= 8
+        if tier == "trench":
+            nets = report.get("insiderNetworks") or []
+            if nets:
+                read.warnings.append(f"{len(nets)} insider network(s) detected in the holder graph.")
+                points -= 8
 
-    # --- Rugcheck's own normalised risk (0 = safest) as corroboration ---
-    rc = report.get("score_normalised")
-    if isinstance(rc, (int, float)):
-        read.rc_risk = int(rc)
-        if rc >= 60:
-            read.flags.append(f"Rugcheck risk index {rc:.0f}/100.")
-            points -= 25
-        elif rc >= 30:
-            read.warnings.append(f"Rugcheck risk index {rc:.0f}/100")
-            points -= 10
-        else:
-            read.passes.append(f"Rugcheck risk index {rc:.0f}/100")
+        # --- Rugcheck's own normalised risk (0 = safest) as corroboration ---
+        rc = report.get("score_normalised")
+        if isinstance(rc, (int, float)):
+            read.rc_risk = int(rc)
+            if rc >= 60:
+                read.flags.append(f"Rugcheck risk index {rc:.0f}/100.")
+                points -= 25
+            elif rc >= 30:
+                read.warnings.append(f"Rugcheck risk index {rc:.0f}/100")
+                points -= 10
+            else:
+                read.passes.append(f"Rugcheck risk index {rc:.0f}/100")
 
-    # --- Named risks ---
-    for risk in report.get("risks") or []:
-        level, name = (risk.get("level") or "").lower(), risk.get("name") or "risk"
-        if level == "danger":
-            read.flags.append(f"Rugcheck: {name}")
-            points -= 15
-        elif level == "warn" and name not in " ".join(read.warnings):
-            read.warnings.append(f"Rugcheck: {name}")
-            points -= 5
+        # --- Named risks ---
+        for risk in report.get("risks") or []:
+            level, name = (risk.get("level") or "").lower(), risk.get("name") or "risk"
+            if level == "danger":
+                read.flags.append(f"Rugcheck: {name}")
+                points -= 15
+            elif level == "warn" and name not in " ".join(read.warnings):
+                read.warnings.append(f"Rugcheck: {name}")
+                points -= 5
+
+    # Secondary corroboration note from GoPlus
+    if goplus_report:
+        if (goplus_report.get("trusted_token") or 0) == 1:
+            read.passes.append("GoPlus verified token")
+        elif not read.hard_fail:
+            read.passes.append("GoPlus authority checks passed")
 
     read.score = 0.0 if read.hard_fail else round(max(points, 0.0), 1)
     return read

@@ -40,6 +40,7 @@ class Settings:
         default_factory=lambda: {
             "dexscreener": ProviderLimit("dexscreener", rps=4.0, burst=8, ttl=30),
             "rugcheck": ProviderLimit("rugcheck", rps=0.8, burst=2, ttl=900),
+            "goplus": ProviderLimit("goplus", rps=1.5, burst=3, ttl=900),
             "geckoterminal": ProviderLimit("geckoterminal", rps=0.45, burst=3, ttl=60),
             "birdeye": ProviderLimit("birdeye", rps=0.8, burst=1, ttl=120),
             "jupiter": ProviderLimit("jupiter", rps=0.8, burst=1, ttl=15),

@@ -9,7 +9,7 @@ from analysis import onchain as onchain_mod
 from analysis import scoring, security, technicals
 from core import cache
 from core.http import gather
-from providers import dexscreener, geckoterminal, rugcheck
+from providers import dexscreener, geckoterminal, goplus, rugcheck
 
 
 @dataclass
@@ -36,10 +36,11 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
     The scoring engine caps a no-technicals verdict at 70, so a light scan can
     never emit a buy signal on its own.
     """
-    # Round 1: the pair is needed to know the pool address and the tier.
-    agg, rc, tstats = await gather(
+    # Round 1: pair, rugcheck, goplus and geckoterminal concurrent calls.
+    agg, rc, gp, tstats = await gather(
         dexscreener.aggregate(mint),
         rugcheck.report(mint),
+        goplus.report(mint),
         geckoterminal.token_stats(mint),
     )
     if not agg:
@@ -47,7 +48,7 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
     pair = agg["pair"]
 
     onc = onchain_mod.analyse(agg, tstats)
-    sec = security.analyse(rc, tier=onc.tier)
+    sec = security.analyse(rc, goplus_report=gp, tier=onc.tier)
 
     # Round 2: candles, only if the token cleared the cheap structural gates.
     tech = technicals.TechRead()
