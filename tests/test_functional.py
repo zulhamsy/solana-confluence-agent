@@ -171,6 +171,12 @@ def test_technicals():
     assert len(tech_read.levels.tp) == 3
     print(f"  [✓] Technical analysis computed: Trend={tech_read.trend}, Score={tech_read.score}, Stop={tech_read.levels.stop:.4f}, TP1={tech_read.levels.tp[0]:.4f}")
 
+    # Test SL Clamping on extreme volatility
+    extreme_levels = technicals.levels_from_atr(close=1.0, atr_val=0.8, supports=[0.01], risk="degenerate")
+    assert extreme_levels.stop >= 0.10  # Clamped above 10% price floor
+    assert extreme_levels.stop < 1.0
+    print(f"  [✓] Extreme volatility stop loss clamped safely: {extreme_levels.stop:.2f}")
+
 def test_scoring():
     print("\n--- Testing analysis/scoring.py ---")
     sec = security.SecurityRead(score=80.0, data_ok=True)
@@ -181,6 +187,12 @@ def test_scoring():
     assert verdict.action in ("STRONG BUY", "BUY")
     assert verdict.risk in ("Low", "Medium")
     print(f"  [✓] Confluence score: {verdict.confluence}, Action: {verdict.action}, Risk: {verdict.risk}, Size: {verdict.size_pct}%")
+
+    # Test Overbought RSI override -> WAIT FOR DIP
+    tech_overbought = technicals.TechRead(score=85.0, data_ok=True, trend="uptrend", rsi=78.0)
+    verdict_ob = scoring.decide(security=sec, onchain=onc, technicals=tech_overbought)
+    assert verdict_ob.action == "WAIT FOR DIP"
+    print(f"  [✓] RSI 78 overbought correctly downgraded BUY to {verdict_ob.action}")
 
     sec_fail = security.SecurityRead(score=0.0, hard_fail=True, data_ok=True, flags=["MINT ACTIVE"])
     verdict_fail = scoring.decide(security=sec_fail, onchain=onc, technicals=tech)
@@ -202,6 +214,26 @@ async def test_cache_and_templates():
         val = await cache.get("test_key")
         assert val == {"symbol": "TEST", "val": 123}
         print("  [✓] L1 & L2 cache set/get verified")
+
+        # Test Scan History in Cache
+        sample_scan = {
+            "timestamp": time.time(),
+            "mint": "TestMint111111111111111111111111111111111111",
+            "symbol": "TEST",
+            "tier": "midcap",
+            "price": 1.25,
+            "confluence": 78.5,
+            "risk": "Medium",
+            "action": "BUY",
+            "entry_price": 1.25,
+            "stop_price": 1.15,
+            "tp1_price": 1.40,
+        }
+        await cache.record_scan(sample_scan)
+        scans = await cache.get_recent_scans(limit=5)
+        assert len(scans) >= 1
+        assert scans[0]["symbol"] == "TEST"
+        print(f"  [✓] SQLite scan_history persisted and retrieved ({len(scans)} records)")
 
         raw_text = "Testing 1.5% [gain] with *stars* and _underscores_ & (parens) - dashes!"
         escaped = T.esc(raw_text)
@@ -231,6 +263,12 @@ async def test_live_pipeline():
         assert "bonk" in r_bonk.symbol.lower()
         assert r_bonk.onchain.tier == "midcap"
         print(f"  [✓] BONK: Price ${r_bonk.price:.8f} | Score {r_bonk.verdict.confluence:.1f} | Action {r_bonk.verdict.action}")
+
+        # Verify scan history was recorded
+        recent = await cache.get_recent_scans(limit=1)
+        assert len(recent) > 0
+        assert recent[0]["mint"] == bonk_mint
+        print(f"  [✓] Live scan successfully logged to SQLite history (symbol: {recent[0]['symbol']})")
 
         msg = T.render_scan(r_bonk)
         assert len(msg) > 100

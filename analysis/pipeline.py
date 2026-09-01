@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 from analysis import onchain as onchain_mod
 from analysis import scoring, security, technicals
+from core import cache
 from core.http import gather
 from providers import dexscreener, geckoterminal, rugcheck
 
@@ -64,11 +66,14 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
 
     verdict = scoring.decide(security=sec, onchain=onc, technicals=tech)
     base = pair.get("baseToken") or {}
-    return ScanResult(
+    price_usd = float(pair.get("priceUsd") or 0)
+    symbol_str = base.get("symbol") or "???"
+
+    result = ScanResult(
         mint=mint,
-        symbol=base.get("symbol") or "???",
+        symbol=symbol_str,
         name=base.get("name") or "Unknown",
-        price=float(pair.get("priceUsd") or 0),
+        price=price_usd,
         pair_url=pair.get("url") or "",
         change=pair.get("priceChange") or {},
         security=sec,
@@ -76,6 +81,26 @@ async def scan(mint: str, *, light: bool = False) -> ScanResult | None:
         technicals=tech,
         verdict=verdict,
     )
+
+    if not light:
+        lv = tech.levels
+        await cache.record_scan({
+            "timestamp": time.time(),
+            "mint": mint,
+            "symbol": symbol_str,
+            "tier": onc.tier,
+            "price": price_usd,
+            "confluence": verdict.confluence,
+            "risk": verdict.risk,
+            "action": verdict.action,
+            "entry_price": lv.entry if lv else None,
+            "stop_price": lv.stop if lv else None,
+            "tp1_price": lv.tp[0] if (lv and len(lv.tp) > 0) else None,
+            "tp2_price": lv.tp[1] if (lv and len(lv.tp) > 1) else None,
+            "tp3_price": lv.tp[2] if (lv and len(lv.tp) > 2) else None,
+        })
+
+    return result
 
 
 async def scan_many(mints: list[str], concurrency: int = 4, *, light: bool = True) -> list[ScanResult]:

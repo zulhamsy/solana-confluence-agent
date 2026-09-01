@@ -41,6 +41,7 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "/discover midcap   scan trending mid-caps\n"
         "/discover trench   scan boosted low-caps\n"
         "/trend             top movers with confluence > 60\n"
+        "/history           show recent scan records\n"
         "/health            cache + provider status"
     )
 
@@ -114,11 +115,27 @@ async def trend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await discover(update, ctx)
 
 
-async def health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def history(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not await guard(update):
         return
-    purged = await cache.vacuum()
-    await update.message.reply_text(f"OK. Purged {purged} expired cache rows.")
+    scans = await cache.get_recent_scans(limit=8)
+    if not scans:
+        await update.message.reply_text("No scan history found yet.")
+        return
+    lines = ["*Recent Scans History*"]
+    for s in scans:
+        icon = T.ACTION_ICON.get(s["action"], "⚪")
+        p_str = T.price(s["price"])
+        lines.append(
+            f"{icon} *${T.esc(s['symbol'])}* — `{T.esc(p_str)}` "
+            f"· *{T.esc(f'{s[\"confluence\"]:.0f}')}/100* \\({T.esc(s['action'])}\\)\n"
+            f"  `{T.esc(s['mint'])}`"
+        )
+    await update.message.reply_text(
+        "\n\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        disable_web_page_preview=True,
+    )
 
 
 def register(app: Application) -> None:
@@ -128,3 +145,4 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("discover", discover))
     app.add_handler(CommandHandler("trend", trend))
     app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("history", history))

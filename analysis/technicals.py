@@ -34,17 +34,27 @@ def _arrays(rows: list[list[float]]):
 
 
 def levels_from_atr(close: float, atr_val: float, supports: list[float], risk: str) -> Levels:
-    """SL below the nearest structural support, floored at 1.5x ATR.
+    """SL below the nearest structural support, floored at ATR multiple.
 
     ATR multiple widens with risk tier: a trench token that only gets 1.5x ATR
-    of room is stopped out by ordinary noise.
+    of room is stopped out by ordinary noise. Stop is clamped to prevent negative
+    or catastrophic (>50% drawdown) levels on extreme volatility.
     """
+    if close <= 0:
+        return Levels(entry=0.0, stop=0.0, tp=[0.0, 0.0, 0.0], atr_pct=0.0, r_multiple=0.0)
+
     mult = {"low": 1.5, "medium": 2.0, "high": 2.5, "degenerate": 3.0}.get(risk, 2.0)
     atr_stop = close - mult * atr_val
     below = [s for s in supports if s < close]
+    # Bound structural support so a single ancient wick doesn't force a 90% drawdown stop
     structural = max(below) * 0.985 if below else atr_stop
+    structural = max(structural, close * 0.50)
+
     stop = min(atr_stop, structural)
-    risk_per_unit = max(close - stop, 1e-12)
+    # Never allow negative stop or sub-10% price floor
+    stop = max(stop, close * 0.10)
+    risk_per_unit = max(close - stop, close * 0.005)
+
     return Levels(
         entry=close,
         stop=stop,

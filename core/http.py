@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import random
 import time
@@ -88,7 +89,9 @@ async def request(
     """
     limit = settings.limits[provider]
     ttl = limit.ttl if ttl is None else ttl
-    key = f"{provider}:{hashlib.sha1(f'{method}{url}{params}{json_body}'.encode()).hexdigest()}"
+    p_str = json.dumps(params, sort_keys=True) if params else ""
+    b_str = json.dumps(json_body, sort_keys=True) if json_body else ""
+    key = f"{provider}:{hashlib.sha1(f'{method}:{url}:{p_str}:{b_str}'.encode()).hexdigest()}"
 
     if method == "GET" and ttl > 0:
         hit = await cache.get(key)
@@ -101,7 +104,10 @@ async def request(
         try:
             resp = await _client.request(method, url, params=params, json=json_body, headers=headers)
             if resp.status_code == 429:
-                wait = float(resp.headers.get("Retry-After", 2 ** i))
+                try:
+                    wait = float(resp.headers.get("Retry-After", 2 ** i))
+                except (ValueError, TypeError):
+                    wait = float(2 ** i)
                 log.warning("%s throttled us; backing off %.1fs", provider, wait)
                 await asyncio.sleep(wait + random.uniform(0, 0.4))
                 continue

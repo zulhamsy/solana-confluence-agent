@@ -105,7 +105,7 @@ def decide(
     else:
         action = "AVOID"
 
-    if technicals.trend == "downtrend" and action in ("STRONG BUY", "BUY", "SPECULATIVE ENTRY"):
+    if (technicals.trend == "downtrend" or (technicals.rsi or 50) > 72) and action in ("STRONG BUY", "BUY", "SPECULATIVE ENTRY"):
         action = "WAIT FOR DIP"
 
     # No chart, no timed entry: the structure may be sound but there is no
